@@ -1,0 +1,377 @@
+<!doctype html>
+<html lang="pl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Przechyl 3D</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:wght@500;700&display=swap">
+<style>
+  /* Układ: pełnoekranowe pudełko 3D, nakładka startowa i dwa małe przyciski na dole. */
+  :root {
+    --paper: #e6e8ec;
+    --ink: #16171b;
+    --cobalt: #2a4bd7;
+    --signal: #ef4a2b;
+    --sun: #f2c230;
+    --blush: #f3a9c6;
+    --display: "Bricolage Grotesque", "Helvetica Neue", Arial, sans-serif;
+  }
+  html, body {
+    margin: 0;
+    height: 100%;
+    overflow: hidden;
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--display);
+    touch-action: none;
+    -webkit-user-select: none;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+  }
+  canvas { display: block; position: fixed; inset: 0; }
+
+  .bar {
+    position: fixed;
+    left: 0; right: 0; bottom: 0;
+    display: flex;
+    gap: 10px;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px max(16px, env(safe-area-inset-left, 0px)) calc(12px + env(safe-area-inset-bottom, 0px)) max(16px, env(safe-area-inset-right, 0px));
+    pointer-events: none;
+  }
+  .bar > * { pointer-events: auto; }
+  .hint { font-size: 13px; letter-spacing: .02em; opacity: .65; pointer-events: none; min-width: 0; }
+  .btns { display: flex; gap: 8px; }
+  button {
+    font: 700 14px/1 var(--display);
+    color: var(--ink);
+    background: #fff;
+    border: 2px solid var(--ink);
+    border-radius: 999px;
+    padding: 11px 16px;
+    cursor: pointer;
+  }
+  button:active { background: var(--sun); }
+  button:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
+
+  .intro {
+    position: fixed; inset: 0;
+    display: flex; flex-direction: column; justify-content: center; align-items: flex-start;
+    gap: 18px;
+    padding: 24px max(24px, env(safe-area-inset-left, 0px));
+    background: var(--paper);
+    z-index: 5;
+  }
+  .intro h1 {
+    margin: 0;
+    font-size: clamp(56px, 20vw, 120px);
+    line-height: .9;
+    letter-spacing: -.04em;
+    font-weight: 700;
+  }
+  .intro h1 span { color: var(--cobalt); }
+  .intro p { margin: 0; max-width: 30ch; font-size: 17px; line-height: 1.4; }
+  .intro .go { background: var(--ink); color: var(--paper); font-size: 18px; padding: 16px 28px; }
+  .intro .go:active { background: var(--cobalt); }
+  .dots { display: flex; gap: 8px; align-items: center; }
+  .dots i { width: 22px; height: 22px; display: block; }
+  .dots i:nth-child(1) { background: var(--cobalt); border-radius: 50%; }
+  .dots i:nth-child(2) { background: var(--signal); border-radius: 3px; transform: rotate(20deg); }
+  .dots i:nth-child(3) { background: var(--sun); border-radius: 50%; width: 26px; height: 14px; }
+  .dots i:nth-child(4) { background: var(--ink); border-radius: 3px; width: 10px; height: 26px; }
+  [hidden] { display: none !important; }
+</style>
+</head>
+<body>
+<canvas id="scena"></canvas>
+
+<div class="bar">
+  <div class="hint" id="hint"></div>
+  <div class="btns">
+    <button id="wiecej" type="button">Dosyp</button>
+    <button id="reset" type="button">Od nowa</button>
+  </div>
+</div>
+
+<div class="intro" id="intro">
+  <div class="dots"><i></i><i></i><i></i><i></i></div>
+  <h1>Przechyl <span>3D</span></h1>
+  <p>Bryły toczą się w pudełku tam, gdzie przechylisz telefon. Trzymaj go pionowo i obracaj.</p>
+  <button class="go" id="start" type="button">Start</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+<script>
+(function () {
+  var T = THREE, C = CANNON;
+  var canvas = document.getElementById('scena');
+  var hint = document.getElementById('hint');
+
+  /* --- Świat: pudełko o wysokości 2*HH, głębokości 2*HD, szerokość z proporcji ekranu --- */
+  var HH = 10, HD = 2.8, hw = 5, W = 1, H = 1, FOV = 45, G = 30;
+
+  var renderer = new T.WebGLRenderer({ canvas: canvas, antialias: true });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = T.PCFSoftShadowMap;
+
+  var scene = new T.Scene();
+  scene.background = new T.Color(0xe6e8ec);
+  var camera = new T.PerspectiveCamera(FOV, 1, 1, 200);
+
+  scene.add(new T.AmbientLight(0xffffff, 0.62));
+  var sun = new T.DirectionalLight(0xffffff, 0.55);
+  sun.position.set(4, 9, 16);
+  sun.castShadow = true;
+  sun.shadow.mapSize.set(1024, 1024);
+  sun.shadow.camera.near = 1;
+  sun.shadow.camera.far = 60;
+  sun.shadow.bias = -0.0008;
+  scene.add(sun);
+
+  var world = new C.World();
+  world.gravity.set(0, -G, 0);
+  world.solver.iterations = 10;
+  world.defaultContactMaterial.friction = 0.3;
+  world.defaultContactMaterial.restitution = 0.25;
+
+  /* --- Ściany: fizyka (płaszczyzny) i wygląd (płaskie panele) --- */
+  var wallDefs = [
+    { id: 'floor',   ax: [1, 0, 0], ang: -Math.PI / 2, color: 0xd0d4dc, visible: true },
+    { id: 'ceiling', ax: [1, 0, 0], ang:  Math.PI / 2, color: 0xeceef2, visible: true },
+    { id: 'left',    ax: [0, 1, 0], ang:  Math.PI / 2, color: 0xdde0e7, visible: true },
+    { id: 'right',   ax: [0, 1, 0], ang: -Math.PI / 2, color: 0xdde0e7, visible: true },
+    { id: 'back',    ax: [0, 1, 0], ang: 0,            color: 0xf3f4f7, visible: true },
+    { id: 'front',   ax: [0, 1, 0], ang: Math.PI,      color: 0xffffff, visible: false }
+  ];
+  var walls = wallDefs.map(function (d) {
+    var body = new C.Body({ mass: 0, shape: new C.Plane() });
+    body.quaternion.setFromAxisAngle(new C.Vec3(d.ax[0], d.ax[1], d.ax[2]), d.ang);
+    world.addBody(body);
+    var mesh = null;
+    if (d.visible) {
+      mesh = new T.Mesh(new T.PlaneGeometry(1, 1), new T.MeshStandardMaterial({ color: d.color, roughness: 1, metalness: 0 }));
+      mesh.receiveShadow = true;
+      mesh.quaternion.set(body.quaternion.x, body.quaternion.y, body.quaternion.z, body.quaternion.w);
+      scene.add(mesh);
+    }
+    return { id: d.id, body: body, mesh: mesh };
+  });
+
+  function layoutWalls() {
+    var spec = {
+      floor:   { p: [0, -HH, 0],  s: [2 * hw, 2 * HD] },
+      ceiling: { p: [0, HH, 0],   s: [2 * hw, 2 * HD] },
+      left:    { p: [-hw, 0, 0],  s: [2 * HD, 2 * HH] },
+      right:   { p: [hw, 0, 0],   s: [2 * HD, 2 * HH] },
+      back:    { p: [0, 0, -HD],  s: [2 * hw, 2 * HH] },
+      front:   { p: [0, 0, HD],   s: [1, 1] }
+    };
+    walls.forEach(function (w) {
+      var sp = spec[w.id];
+      w.body.position.set(sp.p[0], sp.p[1], sp.p[2]);
+      if (w.mesh) {
+        w.mesh.position.set(sp.p[0], sp.p[1], sp.p[2]);
+        w.mesh.scale.set(sp.s[0], sp.s[1], 1);
+      }
+    });
+  }
+
+  /* --- Kształty --- */
+  var COLORS = [0x2a4bd7, 0xef4a2b, 0xf2c230, 0xf3a9c6, 0x16171b, 0xffffff];
+  var items = [];
+  var u = 0.8;
+
+  function rnd(a, b) { return a + Math.random() * (b - a); }
+  function pick(arr) { return arr[Math.floor(Math.random() * arr.length)]; }
+  function span(half, rad) { var m = Math.max(0, half - rad); return rnd(-m, m); }
+
+  function placeFree(rad, top) {
+    for (var t = 0; t < 60; t++) {
+      var x = span(hw, rad);
+      var z = span(HD, rad);
+      var y = top ? HH - rad - rnd(0, 1.5) : span(HH, rad);
+      var ok = true;
+      for (var i = 0; i < items.length; i++) {
+        var p = items[i].body.position;
+        var dx = p.x - x, dy = p.y - y, dz = p.z - z;
+        var min = rad + items[i].rad + 0.05;
+        if (dx * dx + dy * dy + dz * dz < min * min) { ok = false; break; }
+      }
+      if (ok) return { x: x, y: y, z: z };
+    }
+    return { x: span(hw, rad), y: HH - rad, z: span(HD, rad) };
+  }
+
+  function addShape(top) {
+    var kind = Math.floor(Math.random() * 6), geo, shape, rad, r, s, a, l, p, t, h;
+    if (kind === 0) {
+      r = u * rnd(0.55, 0.95);
+      geo = new T.SphereGeometry(r, 28, 20); shape = new C.Sphere(r); rad = r;
+    } else if (kind === 1) {
+      s = u * rnd(0.45, 0.75);
+      geo = new T.BoxGeometry(2 * s, 2 * s, 2 * s); shape = new C.Box(new C.Vec3(s, s, s)); rad = s * 1.74;
+    } else if (kind === 2) {
+      a = u * rnd(0.2, 0.3); l = u * rnd(0.6, 0.95);
+      geo = new T.BoxGeometry(2 * a, 2 * l, 2 * a); shape = new C.Box(new C.Vec3(a, l, a)); rad = Math.sqrt(2 * a * a + l * l);
+    } else if (kind === 3) {
+      p = u * rnd(0.5, 0.8); t = u * 0.14;
+      geo = new T.BoxGeometry(2 * p, 2 * p, 2 * t); shape = new C.Box(new C.Vec3(p, p, t)); rad = Math.sqrt(2 * p * p + t * t);
+    } else if (kind === 4) {
+      r = u * rnd(0.5, 0.8); h = u * rnd(0.2, 0.45);
+      geo = new T.CylinderGeometry(r, r, 2 * h, 20); geo.rotateX(Math.PI / 2);
+      shape = new C.Cylinder(r, r, 2 * h, 20); rad = Math.sqrt(r * r + h * h);
+    } else {
+      r = u * rnd(0.28, 0.4); h = u * rnd(0.6, 0.95);
+      geo = new T.CylinderGeometry(r, r, 2 * h, 20); geo.rotateX(Math.PI / 2);
+      shape = new C.Cylinder(r, r, 2 * h, 20); rad = Math.sqrt(r * r + h * h);
+    }
+    var color = pick(COLORS);
+    var mesh = new T.Mesh(geo, new T.MeshStandardMaterial({ color: color, roughness: 0.45, metalness: 0.04 }));
+    mesh.castShadow = true;
+    mesh.receiveShadow = true;
+    scene.add(mesh);
+
+    var pos = placeFree(rad, top);
+    var body = new C.Body({ mass: 1, shape: shape, linearDamping: 0.05, angularDamping: 0.25 });
+    body.position.set(pos.x, pos.y, pos.z);
+    body.quaternion.setFromEuler(rnd(0, 6.28), rnd(0, 6.28), rnd(0, 6.28), 'XYZ');
+    world.addBody(body);
+    items.push({ body: body, mesh: mesh, rad: rad });
+  }
+
+  function fill(n, top) { for (var i = 0; i < n; i++) addShape(top); }
+
+  function clearShapes() {
+    items.forEach(function (it) {
+      world.removeBody(it.body);
+      scene.remove(it.mesh);
+      it.mesh.geometry.dispose();
+      it.mesh.material.dispose();
+    });
+    items = [];
+  }
+
+  /* --- Rozmiar ekranu --- */
+  function resize() {
+    W = window.innerWidth; H = window.innerHeight;
+    renderer.setSize(W, H, false);
+    canvas.style.width = W + 'px';
+    canvas.style.height = H + 'px';
+    camera.aspect = W / H;
+    camera.updateProjectionMatrix();
+    hw = HH * W / H;
+    u = Math.min(hw, HH) / 6.5;
+    baseZ = HD + HH / Math.tan(FOV * Math.PI / 360);
+    sun.shadow.camera.left = -hw - 3; sun.shadow.camera.right = hw + 3;
+    sun.shadow.camera.top = HH + 3; sun.shadow.camera.bottom = -HH - 3;
+    sun.shadow.camera.updateProjectionMatrix();
+    layoutWalls();
+    items.forEach(function (it) {
+      var p = it.body.position;
+      if (Math.abs(p.x) > hw || Math.abs(p.y) > HH) {
+        it.body.position.set(0, 0, 0);
+        it.body.velocity.set(0, 0, 0);
+        it.body.angularVelocity.set(0, 0, 0);
+      }
+    });
+  }
+  var baseZ = 30;
+
+  /* --- Grawitacja: czujnik albo palec --- */
+  var target = { x: 0, y: 1 };
+  var cur = { x: 0, y: 1 };
+  var hasSensor = false;
+
+  function onOrientation(e) {
+    if (e.beta == null || e.gamma == null) return;
+    hasSensor = true;
+    var b = e.beta * Math.PI / 180, g = e.gamma * Math.PI / 180;
+    var gx = Math.sin(g), gy = Math.sin(b);
+    var a = (screen.orientation && typeof screen.orientation.angle === 'number') ? screen.orientation.angle : (window.orientation || 0);
+    a = ((a % 360) + 360) % 360;
+    var sx = gx, sy = gy;
+    if (a === 90) { sx = -gy; sy = -gx; }
+    else if (a === 180) { sx = -gx; sy = -gy; }
+    else if (a === 270) { sx = gy; sy = gx; }
+    target.x = Math.max(-1, Math.min(1, sx * 1.4));
+    target.y = Math.max(-1, Math.min(1, sy * 1.4));
+    hint.textContent = 'czujnik działa';
+  }
+
+  var dragging = false;
+  function pointerTilt(e) {
+    var dx = (e.clientX - W / 2) / (W / 2);
+    var dy = (e.clientY - H / 2) / (H / 2);
+    var len = Math.sqrt(dx * dx + dy * dy) || 1;
+    var k = Math.min(1, len) / len;
+    target.x = dx * k;
+    target.y = dy * k;
+  }
+  canvas.addEventListener('pointerdown', function (e) { if (!hasSensor) { dragging = true; pointerTilt(e); } });
+  canvas.addEventListener('pointermove', function (e) { if (dragging && !hasSensor) pointerTilt(e); });
+  function release() { if (dragging) { dragging = false; target.x = 0; target.y = 1; } }
+  window.addEventListener('pointerup', release);
+  window.addEventListener('pointercancel', release);
+  window.addEventListener('keydown', function (e) {
+    var map = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
+    if (map[e.key]) { target.x = map[e.key][0]; target.y = map[e.key][1]; }
+  });
+  window.addEventListener('keyup', function () { if (!hasSensor) { target.x = 0; target.y = 1; } });
+
+  /* --- Pętla --- */
+  var clock = new T.Clock();
+  function frame() {
+    requestAnimationFrame(frame);
+    var dt = Math.min(clock.getDelta(), 0.05);
+    cur.x += (target.x - cur.x) * 0.18;
+    cur.y += (target.y - cur.y) * 0.18;
+    world.gravity.set(cur.x * G, -cur.y * G, 0);
+    world.step(1 / 60, dt, 3);
+    for (var i = 0; i < items.length; i++) {
+      var b = items[i].body, m = items[i].mesh;
+      m.position.set(b.position.x, b.position.y, b.position.z);
+      m.quaternion.set(b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w);
+    }
+    // lekki ruch kamery w stronę przechylenia, żeby głębia była czuć
+    camera.position.set(cur.x * 0.5, -cur.y * 0.5, baseZ);
+    camera.lookAt(0, 0, 0);
+    renderer.render(scene, camera);
+  }
+
+  /* --- Start i przyciski --- */
+  var intro = document.getElementById('intro');
+  document.getElementById('start').addEventListener('click', function () {
+    intro.hidden = true;
+    var D = window.DeviceOrientationEvent;
+    function listen() {
+      window.addEventListener('deviceorientation', onOrientation);
+      setTimeout(function () {
+        if (!hasSensor) hint.textContent = 'brak czujnika: przeciągnij palcem po ekranie';
+      }, 900);
+    }
+    if (D && typeof D.requestPermission === 'function') {
+      D.requestPermission().then(function (s) {
+        if (s === 'granted') listen();
+        else hint.textContent = 'brak zgody na ruch: przeciągnij palcem po ekranie';
+      }).catch(function () { hint.textContent = 'brak zgody na ruch: przeciągnij palcem po ekranie'; });
+    } else if (D) {
+      listen();
+    } else {
+      hint.textContent = 'brak czujnika: przeciągnij palcem po ekranie';
+    }
+  });
+  document.getElementById('wiecej').addEventListener('click', function () { fill(8, true); });
+  document.getElementById('reset').addEventListener('click', function () { clearShapes(); fill(32, false); });
+
+  window.addEventListener('resize', resize);
+  resize();
+  fill(32, false);
+  frame();
+})();
+</script>
+</body>
+</html>
